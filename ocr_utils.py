@@ -1,6 +1,6 @@
 """
 ocr_utils.py — Extracción de datos de facturas mediante pytesseract.
-Detecta proveedor, fecha y total de una imagen (jpg/png/webp).
+Detecta proveedor, fecha, total y NIF de una imagen (jpg/png/webp).
 """
 
 import re
@@ -8,10 +8,43 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import pytesseract
 
 logger = logging.getLogger(__name__)
+
+# Configuración pytesseract: columna de texto variable, mejor para tiquets
+_TESSERACT_CONFIG = "--psm 4 --oem 3"
+
+
+# ─────────────────────────────────────────────
+#  Preprocesamiento de imagen
+# ─────────────────────────────────────────────
+
+def _preprocesar(imagen: Image.Image) -> Image.Image:
+    """
+    Mejora la imagen antes del OCR:
+    1. Escala de grises
+    2. Amplía si es pequeña (mínimo 1400 px de ancho)
+    3. Autocontraste
+    4. Aumenta contraste y nitidez
+    """
+    img = imagen.convert("L")  # escala de grises
+
+    ancho, alto = img.size
+    if ancho < 1400:
+        factor = 1400 / ancho
+        img = img.resize(
+            (int(ancho * factor), int(alto * factor)),
+            Image.LANCZOS,
+        )
+
+    img = ImageOps.autocontrast(img, cutoff=2)
+    img = ImageEnhance.Contrast(img).enhance(2.0)
+    img = ImageEnhance.Sharpness(img).enhance(2.5)
+    img = img.filter(ImageFilter.SHARPEN)
+
+    return img
 
 
 # ─────────────────────────────────────────────
@@ -19,30 +52,43 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 
 def _extraer_lineas(ruta_imagen: str) -> List[str]:
-    """Lee la imagen y devuelve las líneas de texto detectadas."""
+    """Preprocesa la imagen y devuelve las líneas de texto detectadas."""
     imagen = Image.open(ruta_imagen)
-    texto = pytesseract.image_to_string(imagen, lang="spa+eng")
-    return [linea.strip() for linea in texto.split("\n") if linea.strip()]
+    imagen = _preprocesar(imagen)
+    texto  = pytesseract.image_to_string(imagen, lang="spa+eng",
+                                         config=_TESSERACT_CONFIG)
+    return [l.strip() for l in texto.split("\n") if l.strip()]
 
 
 def _extraer_proveedor(lineas: List[str]) -> str:
     """
-    Heurística: primera línea con >50 % de letras mayúsculas entre las
-    primeras 6 líneas (típico en encabezados de ticket).
-    Fallback: primera línea no vacía.
+    Heurística para el nombre del proveedor/razón social:
+    1. Ignora líneas muy cortas o con solo números/símbolos.
+    2. Prioriza líneas en MAYÚSCULAS en las primeras 8 líneas.
+    3. Fallback: primera línea con al menos 3 letras.
     """
-    for linea in lineas[:6]:
+    for linea in lineas[:8]:
+        if len(linea) < 3:
+            continue
         letras = [c for c in linea if c.isalpha()]
-        if letras and sum(1 for c in letras if c.isupper()) / len(letras) >= 0.5:
-            return linea
-    return lineas[0] if lineas else ""
+        if len(letras) < 3:
+            continue
+        ratio_may = sum(1 for c in letras if c.isupper()) / len(letras)
+        if ratio_may >= 0.5:
+            return linea.strip("*-=_. ")
+
+    for linea in lineas[:8]:
+        letras = [c for c in linea if c.isalpha()]
+        if len(letras) >= 3:
+            return linea.strip("*-=_. ")
+
+    return lineas[0].strip("*-=_. ") if lineas else ""
 
 
 def _extraer_fecha(lineas: List[str]) -> str:
     """
-    Reconoce varios formatos de fecha comunes en tickets:
+    Reconoce formatos de fecha comunes en tickets españoles:
     dd/mm/aaaa  dd-mm-aaaa  aaaa-mm-dd  dd/mm/aa
-    Si no encuentra ninguna, devuelve la fecha actual.
     """
     patrones = [
         (r"\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})\b", 0, 1, 2, False),
@@ -67,80 +113,89 @@ def _extraer_fecha(lineas: List[str]) -> str:
 
 def _extraer_total(lineas: List[str]) -> Optional[float]:
     """
-    Extrae el importe TOTAL final (con impuestos incluidos).
+    Extrae el importe TOTAL final (con impuestos).
+    Prioridad:
+      1. Líneas con keywords de total final ("total a pagar", "importe total"…)
+      2. Líneas con "total" excluyendo subtotal → devuelve el mayor
+      3. Último importe con símbolo de moneda en el ticket
+    Maneja tanto punto como coma decimal (formato español).
     """
-    def _parse_importe(texto: str) -> Optional[float]:
-        texto = (texto.replace(" ", "").replace("$", "").replace("€", "")
-                      .replace("£", "").replace(",", "."))
-        partes = texto.split(".")
+    def _parse(txt: str) -> Optional[float]:
+        # Normalizar: quitar símbolos monetarios y espacios
+        txt = re.sub(r"[€$£\s]", "", txt)
+        # Formato español: 1.234,56 → 1234.56
+        if re.search(r"\d\.\d{3},\d", txt):
+            txt = txt.replace(".", "").replace(",", ".")
+        else:
+            txt = txt.replace(",", ".")
+        # Si quedan varios puntos, el último es decimal
+        partes = txt.split(".")
         if len(partes) > 2:
-            texto = "".join(partes[:-1]) + "." + partes[-1]
+            txt = "".join(partes[:-1]) + "." + partes[-1]
         try:
-            valor = float(texto)
-            return valor if 0 < valor < 1_000_000 else None
+            v = float(txt)
+            return v if 0 < v < 1_000_000 else None
         except ValueError:
             return None
 
-    patron_importe = r"([\d]+[\d\s,\.]*)"
+    # Patrón: número con posibles separadores de miles/decimales
+    pat_num = r"([\d]+[\d\.,\s]*)"
 
-    keywords_total_final = [
+    # ── Prioridad 1: keywords de total final ──────────────────────────
+    kw_final = [
         "total a pagar", "total con iva", "total con impuesto",
-        "importe total", "total factura", "a pagar", "total €",
-        "total eur", "total usd", "grand total", "amount due",
-        "total due", "net total", "total neto",
+        "importe total", "total factura", "a pagar", "total eur",
+        "total usd", "grand total", "amount due", "total due",
+        "total neto", "total €", "total:",
     ]
     for linea in lineas:
-        linea_lower = linea.lower()
-        if any(kw in linea_lower for kw in keywords_total_final):
-            m = re.search(patron_importe, linea)
-            if m:
-                valor = _parse_importe(m.group(1))
-                if valor is not None:
-                    return valor
+        ll = linea.lower()
+        if any(kw in ll for kw in kw_final):
+            for m in re.finditer(pat_num, linea):
+                v = _parse(m.group(1))
+                if v is not None:
+                    return v
 
+    # ── Prioridad 2: "total" o "importe" sin ser subtotal ────────────
     candidatos: List[float] = []
     for linea in lineas:
-        linea_lower = linea.lower()
-        if "subtotal" in linea_lower or "base imp" in linea_lower:
+        ll = linea.lower()
+        if "subtotal" in ll or "base imp" in ll or "base imponible" in ll:
             continue
-        if "total" in linea_lower or "importe" in linea_lower:
-            for m in re.finditer(patron_importe, linea):
-                valor = _parse_importe(m.group(1))
-                if valor is not None:
-                    candidatos.append(valor)
-
+        if "total" in ll or "importe" in ll:
+            for m in re.finditer(pat_num, linea):
+                v = _parse(m.group(1))
+                if v is not None:
+                    candidatos.append(v)
     if candidatos:
         return max(candidatos)
 
-    texto_completo = " ".join(lineas)
+    # ── Prioridad 3: último importe con símbolo de moneda ────────────
     todos = []
-    for pat in [r"\$\s*([\d,\.]+)", r"([\d,\.]+)\s*(?:€|£)"]:
-        for m in re.finditer(pat, texto_completo):
-            valor = _parse_importe(m.group(1))
-            if valor is not None:
-                todos.append(valor)
+    texto_completo = " ".join(lineas)
+    for pat in [r"([\d\.,]+)\s*€", r"\$\s*([\d\.,]+)", r"([\d\.,]+)\s*EUR"]:
+        for m in re.finditer(pat, texto_completo, re.IGNORECASE):
+            v = _parse(m.group(1))
+            if v is not None:
+                todos.append(v)
     if todos:
         return max(todos)
 
     return None
 
 
-# ─────────────────────────────────────────────
-#  Función pública principal
-# ─────────────────────────────────────────────
-
 def _extraer_nif(lineas: List[str]) -> str:
     """
     Extrae el NIF/CIF/NIE del establecimiento emisor.
-    CIF (empresas):  letra + 7 dígitos + letra/dígito
-    NIF (personas):  8 dígitos + letra
+    CIF (empresas):   letra + 7 dígitos + letra/dígito
+    NIF (personas):   8 dígitos + letra
     NIE (extranjeros): X/Y/Z + 7 dígitos + letra
     """
     texto = " ".join(lineas).upper()
     patrones = [
-        r'\b[ABCDEFGHJKLMNPQRSUVW]\d{7}[A-J0-9]\b',  # CIF empresa
-        r'\b\d{8}[A-HJ-NP-TV-Z]\b',                   # NIF persona
-        r'\b[XYZ]\d{7}[A-HJ-NP-TV-Z]\b',              # NIE extranjero
+        r'\b[ABCDEFGHJKLMNPQRSUVW]\d{7}[A-J0-9]\b',  # CIF
+        r'\b\d{8}[A-HJ-NP-TV-Z]\b',                   # NIF
+        r'\b[XYZ]\d{7}[A-HJ-NP-TV-Z]\b',              # NIE
     ]
     for patron in patrones:
         m = re.search(patron, texto)
@@ -149,10 +204,14 @@ def _extraer_nif(lineas: List[str]) -> str:
     return ""
 
 
+# ─────────────────────────────────────────────
+#  Función pública principal
+# ─────────────────────────────────────────────
+
 def extraer_datos_factura(ruta_imagen: str) -> Dict[str, Any]:
     """
     Extrae proveedor, fecha, total y NIF de la imagen indicada.
-    Siempre devuelve un dict con las claves:
+    Devuelve dict con claves:
         proveedor (str), fecha (str), total (float|None),
         nif (str), exito (bool), texto_raw (list[str])
     """
@@ -173,18 +232,21 @@ def extraer_datos_factura(ruta_imagen: str) -> Dict[str, Any]:
             logger.warning("OCR no encontró texto en la imagen.")
             return resultado
 
-        logger.info("Líneas detectadas (%d): %s", len(lineas), lineas[:8])
+        logger.info("Líneas detectadas (%d): %s", len(lineas), lineas[:10])
 
         resultado["texto_raw"] = lineas
         resultado["proveedor"] = _extraer_proveedor(lineas)
         resultado["fecha"]     = _extraer_fecha(lineas)
         resultado["total"]     = _extraer_total(lineas)
         resultado["nif"]       = _extraer_nif(lineas)
-        resultado["exito"]     = bool(resultado["proveedor"] and resultado["total"] is not None)
+        resultado["exito"]     = bool(
+            resultado["proveedor"] and resultado["total"] is not None
+        )
 
         logger.info(
-            "OCR finalizado → proveedor='%s' | fecha='%s' | total=%s",
-            resultado["proveedor"], resultado["fecha"], resultado["total"],
+            "OCR → proveedor='%s' | nif='%s' | fecha='%s' | total=%s",
+            resultado["proveedor"], resultado["nif"],
+            resultado["fecha"], resultado["total"],
         )
 
     except Exception as exc:
@@ -194,7 +256,7 @@ def extraer_datos_factura(ruta_imagen: str) -> Dict[str, Any]:
 
 
 def extraer_texto_crudo(ruta_imagen: str) -> List[str]:
-    """Devuelve las líneas de texto detectadas sin procesamiento adicional."""
+    """Devuelve las líneas detectadas sin procesamiento adicional."""
     try:
         return _extraer_lineas(ruta_imagen)
     except Exception as exc:
