@@ -12,6 +12,7 @@ Flujo principal:
 import base64
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -63,7 +64,7 @@ IMAGENES_DIR  = Path(__file__).parent / "imagenes"
     MANUAL_PROVEEDOR,
     MANUAL_FECHA,
     MANUAL_TOTAL,
-    CONFIRMANDO_SIN_NIF,
+    MANUAL_NIF,
 ) = range(7)
 
 CATEGORIAS = [
@@ -279,19 +280,14 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
         await procesando.delete()
 
-        # Si no hay NIF → pedir confirmación
+        # Si no hay NIF → pedir que lo escriba manualmente
         if not context.user_data.get("nif"):
             await update.effective_message.reply_text(
-                "⚠️ *No encontré el NIF/CIF del establecimiento* en la imagen.\n\n"
-                "Para un registro correcto es importante que el NIF sea visible.\n\n"
-                "¿Qué deseas hacer?",
+                "🔢 *No encontré el NIF/CIF* en la imagen.\n\n"
+                "Escríbelo manualmente (ej: `B12345678`) o escribe `saltar` para continuar sin él:",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📷 Reenviar foto", callback_data="reenviar_foto")],
-                    [InlineKeyboardButton("➡️ Continuar sin NIF", callback_data="continuar_sin_nif")],
-                ]),
             )
-            return CONFIRMANDO_SIN_NIF
+            return MANUAL_NIF
 
         return await _enrutar_tras_foto(update, context)
 
@@ -308,31 +304,31 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return MANUAL_PROVEEDOR
 
 
-async def confirmar_sin_nif(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Maneja la respuesta del usuario cuando no se detectó NIF."""
-    query: CallbackQuery = update.callback_query
-    await query.answer()
+async def manual_nif(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Recibe el NIF escrito manualmente por el usuario."""
+    texto = update.message.text.strip().upper().replace(" ", "")
 
-    if query.data == "reenviar_foto":
-        img_tmp = context.user_data.get("imagen_temp", "")
-        if img_tmp and os.path.exists(img_tmp):
-            try:
-                os.remove(img_tmp)
-            except OSError:
-                pass
-        context.user_data.clear()
-        user = update.effective_user
-        context.user_data["telegram_id"]     = user.id
-        context.user_data["telegram_nombre"] = user.first_name
-        await query.edit_message_text(
-            "📷 Vuelve a enviar la foto asegurándote de que el *NIF/CIF* del "
-            "establecimiento sea visible en la imagen.",
-            parse_mode="Markdown",
-        )
-        return ESPERANDO_FOTO
+    if texto in ("SALTAR", "NO", "SKIP", "-", "S"):
+        context.user_data["nif"] = ""
+    else:
+        patrones = [
+            r'^[ABCDEFGHJKLMNPQRSUVW]\d{7}[A-J0-9]$',
+            r'^\d{8}[A-HJ-NP-TV-Z]$',
+            r'^[XYZ]\d{7}[A-HJ-NP-TV-Z]$',
+        ]
+        if any(re.match(p, texto) for p in patrones):
+            context.user_data["nif"] = texto
+        elif len(texto) >= 8:
+            # Acepta formatos aproximados (OCR puede haber confundido algún carácter)
+            context.user_data["nif"] = texto
+        else:
+            await update.message.reply_text(
+                "❌ Formato no válido. Escribe el NIF/CIF (ej: `B12345678`, `12345678A`) "
+                "o escribe `saltar`:",
+                parse_mode="Markdown",
+            )
+            return MANUAL_NIF
 
-    # Continuar sin NIF
-    await query.delete_message()
     return await _enrutar_tras_foto(update, context)
 
 
@@ -421,6 +417,13 @@ async def manual_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def seleccionar_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query: CallbackQuery = update.callback_query
     await query.answer()
+
+    # Captura de usuario como respaldo (por si el bot reinició entre pasos)
+    user = update.effective_user
+    if not context.user_data.get("telegram_id"):
+        _registrar_usuario_telegram(update)
+        context.user_data["telegram_id"]     = user.id
+        context.user_data["telegram_nombre"] = user.first_name
 
     if query.data == "MANUAL":
         await query.edit_message_text("✏️ Escribe el nombre de la categoría:")
@@ -544,9 +547,8 @@ def main() -> None:
                 MessageHandler(filtro_imagen, recibir_foto),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje_no_foto),
             ],
-            CONFIRMANDO_SIN_NIF: [
-                CallbackQueryHandler(confirmar_sin_nif,
-                                     pattern="^(reenviar_foto|continuar_sin_nif)$"),
+            MANUAL_NIF: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual_nif),
             ],
             SELECCIONANDO_CATEGORIA: [
                 CallbackQueryHandler(seleccionar_categoria),
