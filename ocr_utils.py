@@ -129,17 +129,38 @@ def _extraer_total(lineas: List[str]) -> Optional[float]:
 #  Función pública principal
 # ─────────────────────────────────────────────
 
+def _extraer_nif(lineas: List[str]) -> str:
+    """
+    Extrae el NIF/CIF/NIE del establecimiento emisor.
+    CIF (empresas):  letra + 7 dígitos + letra/dígito
+    NIF (personas):  8 dígitos + letra
+    NIE (extranjeros): X/Y/Z + 7 dígitos + letra
+    """
+    texto = " ".join(lineas).upper()
+    patrones = [
+        r'\b[ABCDEFGHJKLMNPQRSUVW]\d{7}[A-J0-9]\b',  # CIF empresa
+        r'\b\d{8}[A-HJ-NP-TV-Z]\b',                   # NIF persona
+        r'\b[XYZ]\d{7}[A-HJ-NP-TV-Z]\b',              # NIE extranjero
+    ]
+    for patron in patrones:
+        m = re.search(patron, texto)
+        if m:
+            return m.group(0)
+    return ""
+
+
 def extraer_datos_factura(ruta_imagen: str) -> Dict[str, Any]:
     """
-    Extrae proveedor, fecha y total de la imagen indicada.
+    Extrae proveedor, fecha, total y NIF de la imagen indicada.
     Siempre devuelve un dict con las claves:
         proveedor (str), fecha (str), total (float|None),
-        exito (bool), texto_raw (list[str])
+        nif (str), exito (bool), texto_raw (list[str])
     """
     resultado: Dict[str, Any] = {
         "proveedor": "",
         "fecha": datetime.now().strftime("%Y-%m-%d"),
         "total": None,
+        "nif": "",
         "exito": False,
         "texto_raw": [],
     }
@@ -158,6 +179,7 @@ def extraer_datos_factura(ruta_imagen: str) -> Dict[str, Any]:
         resultado["proveedor"] = _extraer_proveedor(lineas)
         resultado["fecha"]     = _extraer_fecha(lineas)
         resultado["total"]     = _extraer_total(lineas)
+        resultado["nif"]       = _extraer_nif(lineas)
         resultado["exito"]     = bool(resultado["proveedor"] and resultado["total"] is not None)
 
         logger.info(

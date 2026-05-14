@@ -2,15 +2,11 @@
 bot.py — Bot de Telegram para registro automático de facturas y tickets.
 
 Flujo principal:
-  1. Usuario envía foto → OCR extrae proveedor, fecha y total.
-  2. Si faltan datos → se solicitan manualmente.
-  3. Se muestra un teclado inline para elegir categoría.
-  4. La factura se guarda en SQLite con número correlativo (F-0001…).
-
-Ejecución:
-  export TELEGRAM_TOKEN="tu_token"   (Linux/macOS)
-  set TELEGRAM_TOKEN=tu_token        (Windows)
-  python bot.py
+  1. Usuario envía foto → OCR extrae proveedor, fecha, total y NIF.
+  2. Si no hay NIF → opción de reenviar foto o continuar sin NIF.
+  3. Si faltan otros datos → se solicitan manualmente.
+  4. Se muestra teclado inline para elegir categoría.
+  5. La factura se guarda en PostgreSQL con número correlativo (F-0001…).
 """
 
 import base64
@@ -35,7 +31,13 @@ from telegram.ext import (
     filters,
 )
 
-from database import guardar_factura, init_db, obtener_siguiente_numero
+from database import (
+    guardar_factura,
+    init_db,
+    obtener_siguiente_numero,
+    obtener_facturas_por_usuario,
+    registrar_usuario,
+)
 from ocr_utils import extraer_datos_factura
 
 # ─── Logging ───────────────────────────────────────────────────────────────────
@@ -50,7 +52,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── Constantes ────────────────────────────────────────────────────────────────
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://127.0.0.1:8501")
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://facturacion-bot-bdq2pwexyhjmu2kjfiyagh.streamlit.app")
 IMAGENES_DIR  = Path(__file__).parent / "imagenes"
 
 # Estados del ConversationHandler
@@ -61,13 +63,14 @@ IMAGENES_DIR  = Path(__file__).parent / "imagenes"
     MANUAL_PROVEEDOR,
     MANUAL_FECHA,
     MANUAL_TOTAL,
-) = range(6)
+    CONFIRMANDO_SIN_NIF,
+) = range(7)
 
 CATEGORIAS = [
-    ("🛒 Supermercado",       "Supermercado"),
-    ("🍽️ Restaurante",        "Restaurante"),
-    ("⚡ Servicios",          "Servicios"),
-    ("📦 Otros",              "Otros"),
+    ("🛒 Supermercado",         "Supermercado"),
+    ("🍽️ Restaurante",          "Restaurante"),
+    ("⚡ Servicios",            "Servicios"),
+    ("📦 Otros",                "Otros"),
     ("✏️ Escribir manualmente", "MANUAL"),
 ]
 
@@ -83,11 +86,22 @@ def _teclado_categorias() -> InlineKeyboardMarkup:
 def _resumen_datos(ctx: ContextTypes.DEFAULT_TYPE) -> str:
     ud = ctx.user_data
     total_str = f"${ud['total']:.2f}" if ud.get("total") is not None else "—"
+    nif_str   = ud.get("nif") or "—"
     return (
         f"🏪 *Proveedor:* {ud.get('proveedor') or '—'}\n"
+        f"🔢 *NIF/CIF:*   {nif_str}\n"
         f"📅 *Fecha:*     {ud.get('fecha') or '—'}\n"
         f"💰 *Total:*     {total_str}"
     )
+
+
+def _registrar_usuario_telegram(update: Update) -> None:
+    """Registra o actualiza el usuario en la BD."""
+    user = update.effective_user
+    try:
+        registrar_usuario(user.id, user.first_name, user.username or "")
+    except Exception as exc:
+        logger.warning("No se pudo registrar usuario %s: %s", user.id, exc)
 
 
 async def _pedir_proveedor(update: Update) -> None:
@@ -122,18 +136,56 @@ async def _mostrar_categoria_teclado(update: Update, ctx: ContextTypes.DEFAULT_T
     )
 
 
+async def _enrutar_tras_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Decide el siguiente estado según los datos disponibles tras el OCR."""
+    ud = context.user_data
+    tiene_proveedor = bool(ud.get("proveedor"))
+    tiene_total     = ud.get("total") is not None
+
+    if tiene_proveedor and tiene_total:
+        await _mostrar_categoria_teclado(update, context)
+        return SELECCIONANDO_CATEGORIA
+
+    campos_faltantes = []
+    if not tiene_proveedor:
+        campos_faltantes.append("proveedor")
+    if not tiene_total:
+        campos_faltantes.append("total")
+
+    await update.effective_message.reply_text(
+        "⚠️ *No pude extraer todos los datos automáticamente.*\n\n"
+        f"Lo que encontré:\n{_resumen_datos(context)}\n\n"
+        f"Faltan: *{', '.join(campos_faltantes)}*\n\n"
+        "Completaremos los datos manualmente. 📝",
+        parse_mode="Markdown",
+    )
+
+    if not tiene_proveedor:
+        await _pedir_proveedor(update)
+        return MANUAL_PROVEEDOR
+
+    await _pedir_total(update)
+    return MANUAL_TOTAL
+
+
 # ─── Comandos ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _registrar_usuario_telegram(update)
     context.user_data.clear()
+    user = update.effective_user
+    context.user_data["telegram_id"]     = user.id
+    context.user_data["telegram_nombre"] = user.first_name
+
     await update.message.reply_text(
-        "👋 *Bienvenido al Sistema de Facturación*\n\n"
+        f"👋 *Bienvenido al Sistema de Facturación, {user.first_name}*\n\n"
         "Envíame una foto de tu factura o ticket y yo me encargo del resto:\n\n"
         "1️⃣ Envía la *foto* de la factura\n"
         "2️⃣ Verifico y extraigo los datos con OCR\n"
         "3️⃣ Selecciona la categoría\n"
         "4️⃣ ¡La factura queda guardada con número único!\n\n"
         "📊 /dashboard → enlace al panel de control\n"
+        "📋 /historial → ver mis facturas\n"
         "❌ /cancel    → cancelar en cualquier momento\n\n"
         "Cuando estés listo, *envía la foto*. 👇",
         parse_mode="Markdown",
@@ -144,10 +196,36 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         f"📊 *Dashboard de Facturación*\n\n"
-        f"🔗 {DASHBOARD_URL}\n\n"
-        f"_(Ejecuta `streamlit run dashboard.py` para iniciarlo)_",
+        f"🔗 {DASHBOARD_URL}",
         parse_mode="Markdown",
     )
+
+
+async def cmd_historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    telegram_id = update.effective_user.id
+    facturas = obtener_facturas_por_usuario(telegram_id)
+
+    if not facturas:
+        await update.message.reply_text(
+            "📋 No tienes facturas registradas aún.\n\n"
+            "Envía una foto para registrar la primera."
+        )
+        return
+
+    total_acumulado = sum(f["total"] for f in facturas)
+    lineas = [
+        f"`{f['numero']}` {f['proveedor'][:18]} | {f['fecha']} | ${f['total']:.2f}"
+        for f in facturas[:10]
+    ]
+    texto = (
+        f"📋 *Tus facturas:*\n\n"
+        + "\n".join(lineas)
+        + f"\n\n💰 *Total acumulado:* ${total_acumulado:,.2f}"
+    )
+    if len(facturas) > 10:
+        texto += f"\n_(Mostrando 10 de {len(facturas)})_"
+
+    await update.message.reply_text(texto, parse_mode="Markdown")
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -161,8 +239,13 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ─── Recepción de foto ─────────────────────────────────────────────────────────
 
 async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Descarga la imagen y ejecuta OCR; enruta según el resultado."""
+    """Descarga la imagen, ejecuta OCR y enruta según el resultado."""
+    _registrar_usuario_telegram(update)
     IMAGENES_DIR.mkdir(parents=True, exist_ok=True)
+
+    user = update.effective_user
+    context.user_data["telegram_id"]     = user.id
+    context.user_data["telegram_nombre"] = user.first_name
 
     procesando = await update.effective_message.reply_text(
         "⏳ *Procesando imagen…* Por favor espera.",
@@ -171,7 +254,6 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     ruta_temp = ""
     try:
-        # Soporta fotos comprimidas y documentos/imágenes sin comprimir
         if update.message.photo:
             file_obj = await context.bot.get_file(update.message.photo[-1].file_id)
             ext = ".jpg"
@@ -187,46 +269,31 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
         datos = extraer_datos_factura(ruta_temp)
 
-        context.user_data.update(
-            {
-                "imagen_temp": ruta_temp,
-                "proveedor":   datos["proveedor"],
-                "fecha":       datos["fecha"] or datetime.now().strftime("%Y-%m-%d"),
-                "total":       datos["total"],
-            }
-        )
+        context.user_data.update({
+            "imagen_temp": ruta_temp,
+            "proveedor":   datos["proveedor"],
+            "fecha":       datos["fecha"] or datetime.now().strftime("%Y-%m-%d"),
+            "total":       datos["total"],
+            "nif":         datos.get("nif", ""),
+        })
 
         await procesando.delete()
 
-        tiene_proveedor = bool(context.user_data["proveedor"])
-        tiene_total     = context.user_data["total"] is not None
+        # Si no hay NIF → pedir confirmación
+        if not context.user_data.get("nif"):
+            await update.effective_message.reply_text(
+                "⚠️ *No encontré el NIF/CIF del establecimiento* en la imagen.\n\n"
+                "Para un registro correcto es importante que el NIF sea visible.\n\n"
+                "¿Qué deseas hacer?",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📷 Reenviar foto", callback_data="reenviar_foto")],
+                    [InlineKeyboardButton("➡️ Continuar sin NIF", callback_data="continuar_sin_nif")],
+                ]),
+            )
+            return CONFIRMANDO_SIN_NIF
 
-        if tiene_proveedor and tiene_total:
-            await _mostrar_categoria_teclado(update, context)
-            return SELECCIONANDO_CATEGORIA
-
-        # Datos incompletos → flujo manual
-        campos_faltantes = []
-        if not tiene_proveedor:
-            campos_faltantes.append("proveedor")
-        if not tiene_total:
-            campos_faltantes.append("total")
-
-        await update.effective_message.reply_text(
-            "⚠️ *No pude extraer todos los datos automáticamente.*\n\n"
-            f"Lo que encontré:\n{_resumen_datos(context)}\n\n"
-            f"Faltan: *{', '.join(campos_faltantes)}*\n\n"
-            "Completaremos los datos manualmente. 📝",
-            parse_mode="Markdown",
-        )
-
-        if not tiene_proveedor:
-            await _pedir_proveedor(update)
-            return MANUAL_PROVEEDOR
-
-        # Tiene proveedor pero no total
-        await _pedir_total(update)
-        return MANUAL_TOTAL
+        return await _enrutar_tras_foto(update, context)
 
     except Exception as exc:
         logger.error("Error procesando foto: %s", exc, exc_info=True)
@@ -239,6 +306,34 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         await _pedir_proveedor(update)
         return MANUAL_PROVEEDOR
+
+
+async def confirmar_sin_nif(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Maneja la respuesta del usuario cuando no se detectó NIF."""
+    query: CallbackQuery = update.callback_query
+    await query.answer()
+
+    if query.data == "reenviar_foto":
+        img_tmp = context.user_data.get("imagen_temp", "")
+        if img_tmp and os.path.exists(img_tmp):
+            try:
+                os.remove(img_tmp)
+            except OSError:
+                pass
+        context.user_data.clear()
+        user = update.effective_user
+        context.user_data["telegram_id"]     = user.id
+        context.user_data["telegram_nombre"] = user.first_name
+        await query.edit_message_text(
+            "📷 Vuelve a enviar la foto asegurándote de que el *NIF/CIF* del "
+            "establecimiento sea visible en la imagen.",
+            parse_mode="Markdown",
+        )
+        return ESPERANDO_FOTO
+
+    # Continuar sin NIF
+    await query.delete_message()
+    return await _enrutar_tras_foto(update, context)
 
 
 async def mensaje_no_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -260,7 +355,6 @@ async def manual_proveedor(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     context.user_data["proveedor"] = proveedor
 
-    # Si ya tenemos total (parcialmente extraído por OCR), ir directo a categoría
     if context.user_data.get("total") is not None:
         await _mostrar_categoria_teclado(update, context)
         return SELECCIONANDO_CATEGORIA
@@ -360,14 +454,17 @@ async def _ignorar_texto_en_categoria(
 async def _guardar_y_confirmar(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
-    """Persiste la factura en BD, renombra la imagen y envía confirmación."""
+    """Persiste la factura en BD y envía confirmación."""
     ud = context.user_data
     try:
-        proveedor  = ud["proveedor"]
-        fecha      = ud["fecha"]
-        total      = float(ud["total"])
-        categoria  = ud["categoria"]
-        imagen_tmp = ud.get("imagen_temp", "")
+        proveedor       = ud["proveedor"]
+        fecha           = ud["fecha"]
+        total           = float(ud["total"])
+        categoria       = ud["categoria"]
+        nif             = ud.get("nif", "")
+        telegram_id     = ud.get("telegram_id", 0)
+        telegram_nombre = ud.get("telegram_nombre", "")
+        imagen_tmp      = ud.get("imagen_temp", "")
 
         numero = obtener_siguiente_numero()
 
@@ -381,18 +478,22 @@ async def _guardar_y_confirmar(
                 pass
 
         guardar_factura(
-            numero        = numero,
-            proveedor     = proveedor,
-            fecha         = fecha,
-            total         = total,
-            categoria     = categoria,
-            imagen_base64 = imagen_b64,
+            numero          = numero,
+            proveedor       = proveedor,
+            fecha           = fecha,
+            total           = total,
+            categoria       = categoria,
+            imagen_base64   = imagen_b64,
+            nif             = nif,
+            telegram_id     = telegram_id,
+            telegram_nombre = telegram_nombre,
         )
 
         await update.effective_message.reply_text(
             f"🎉 *¡Factura guardada exitosamente!*\n\n"
             f"📋 *Número:*    `{numero}`\n"
             f"🏪 *Proveedor:* {proveedor}\n"
+            f"🔢 *NIF/CIF:*   {nif or '—'}\n"
             f"📅 *Fecha:*     {fecha}\n"
             f"💰 *Total:*     ${total:.2f}\n"
             f"🏷️ *Categoría:* {categoria}\n\n"
@@ -402,7 +503,6 @@ async def _guardar_y_confirmar(
 
     except Exception as exc:
         logger.error("Error guardando factura: %s", exc, exc_info=True)
-        # Limpiar imagen temporal huérfana
         img_tmp = ud.get("imagen_temp", "")
         if img_tmp and os.path.exists(img_tmp):
             try:
@@ -424,9 +524,7 @@ def main() -> None:
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
         raise SystemExit(
-            "❌ No se encontró TELEGRAM_TOKEN en las variables de entorno.\n"
-            "  Linux/macOS: export TELEGRAM_TOKEN='tu_token'\n"
-            "  Windows:     set TELEGRAM_TOKEN=tu_token"
+            "❌ No se encontró TELEGRAM_TOKEN en las variables de entorno."
         )
 
     init_db()
@@ -445,6 +543,10 @@ def main() -> None:
             ESPERANDO_FOTO: [
                 MessageHandler(filtro_imagen, recibir_foto),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje_no_foto),
+            ],
+            CONFIRMANDO_SIN_NIF: [
+                CallbackQueryHandler(confirmar_sin_nif,
+                                     pattern="^(reenviar_foto|continuar_sin_nif)$"),
             ],
             SELECCIONANDO_CATEGORIA: [
                 CallbackQueryHandler(seleccionar_categoria),
@@ -472,6 +574,7 @@ def main() -> None:
 
     app.add_handler(conv)
     app.add_handler(CommandHandler("dashboard", cmd_dashboard))
+    app.add_handler(CommandHandler("historial", cmd_historial))
 
     logger.info("🚀 Bot iniciado. Esperando mensajes…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
