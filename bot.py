@@ -144,7 +144,12 @@ async def _enrutar_tras_foto(update: Update, context: ContextTypes.DEFAULT_TYPE)
     tiene_total     = ud.get("total") is not None
 
     if tiene_proveedor and tiene_total:
-        await _mostrar_categoria_teclado(update, context)
+        await update.effective_message.reply_text(
+            f"✅ *Datos leídos automáticamente:*\n\n{_resumen_datos(context)}\n\n"
+            "Selecciona la *categoría*:",
+            parse_mode="Markdown",
+            reply_markup=_teclado_categorias(),
+        )
         return SELECCIONANDO_CATEGORIA
 
     campos_faltantes = []
@@ -154,10 +159,9 @@ async def _enrutar_tras_foto(update: Update, context: ContextTypes.DEFAULT_TYPE)
         campos_faltantes.append("total")
 
     await update.effective_message.reply_text(
-        "⚠️ *No pude extraer todos los datos automáticamente.*\n\n"
+        "⚠️ *No pude leer todos los datos de la imagen.*\n\n"
         f"Lo que encontré:\n{_resumen_datos(context)}\n\n"
-        f"Faltan: *{', '.join(campos_faltantes)}*\n\n"
-        "Completaremos los datos manualmente. 📝",
+        f"Completa manualmente: *{', '.join(campos_faltantes)}*",
         parse_mode="Markdown",
     )
 
@@ -279,16 +283,6 @@ async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         })
 
         await procesando.delete()
-
-        # Si no hay NIF → pedir que lo escriba manualmente
-        if not context.user_data.get("nif"):
-            await update.effective_message.reply_text(
-                "🔢 *No encontré el NIF/CIF* en la imagen.\n\n"
-                "Escríbelo manualmente (ej: `B12345678`) o escribe `saltar` para continuar sin él:",
-                parse_mode="Markdown",
-            )
-            return MANUAL_NIF
-
         return await _enrutar_tras_foto(update, context)
 
     except Exception as exc:

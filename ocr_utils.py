@@ -105,8 +105,8 @@ def _extraer_nombre_negocio(lineas: List[str]) -> str:
         letras = [c for c in linea if c.isalpha()]
         if len(letras) < 3:
             continue
-        # Prioriza líneas con mayoría de mayúsculas
-        if sum(1 for c in letras if c.isupper()) / len(letras) >= 0.6:
+        # Prioriza líneas con mayoría de mayúsculas (umbral 0.4 para nombres mixtos)
+        if sum(1 for c in letras if c.isupper()) / len(letras) >= 0.4:
             return linea.strip("*-=_. |")
 
     # Fallback
@@ -208,10 +208,21 @@ def _extraer_total(lineas: List[str]) -> Optional[float]:
         "total a pagar", "total con iva", "total con impuesto",
         "importe total", "total factura", "a pagar", "total eur",
         "grand total", "amount due", "total due", "total:",
+        "tot.:", "tot :", "imp. total", "importe:",
     ]
     for linea in lineas:
         ll = linea.lower()
         if any(kw in ll for kw in kw_alta):
+            nums = [_parse(m.group(1)) for m in re.finditer(pat_num, linea)]
+            nums = [n for n in nums if n]
+            if nums:
+                return max(nums)
+
+    # Regex tolerante a errores OCR frecuentes: T0TAL, TOTAI, T07AL, etc.
+    _pat_total_ocr = re.compile(r't[o0][t7][a4][il1]', re.IGNORECASE)
+    _pat_importe_ocr = re.compile(r'imp[o0]rte?', re.IGNORECASE)
+    for linea in lineas:
+        if _pat_total_ocr.search(linea) or _pat_importe_ocr.search(linea):
             nums = [_parse(m.group(1)) for m in re.finditer(pat_num, linea)]
             nums = [n for n in nums if n]
             if nums:
@@ -223,7 +234,7 @@ def _extraer_total(lineas: List[str]) -> Optional[float]:
         ll = linea.lower()
         if any(x in ll for x in ("subtotal", "base imp", "base imponible", "antes de iva")):
             continue
-        if "total" in ll or "importe" in ll:
+        if "total" in ll or "importe" in ll or _pat_total_ocr.search(linea):
             nums = [_parse(m.group(1)) for m in re.finditer(pat_num, linea)]
             candidatos.extend(n for n in nums if n)
 
