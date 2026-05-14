@@ -7,9 +7,10 @@ Ejecución:
   streamlit run dashboard.py
 """
 
+import base64
 import logging
-import os
 from datetime import datetime
+from io import BytesIO
 
 import pandas as pd
 import plotly.express as px
@@ -37,7 +38,7 @@ def _cargar_datos() -> pd.DataFrame:
     if not registros:
         return pd.DataFrame(
             columns=["id", "numero", "proveedor", "fecha", "total",
-                     "categoria", "imagen_path", "fecha_subida"]
+                     "categoria", "imagen_base64", "fecha_subida"]
         )
     df = pd.DataFrame(registros)
     df["fecha"]       = pd.to_datetime(df["fecha"],       errors="coerce")
@@ -152,8 +153,6 @@ def _tabla(df: pd.DataFrame) -> None:
     if filas:
         idx      = filas[0]
         fila_df  = df.iloc[idx]
-        imagen   = fila_df.get("imagen_path", "")
-
         st.markdown("---")
         col_info, col_img = st.columns([1, 1])
 
@@ -165,8 +164,13 @@ def _tabla(df: pd.DataFrame) -> None:
             st.markdown(f"**🏷️ Categoría:** {fila_df['categoria']}")
 
         with col_img:
-            if imagen and os.path.exists(imagen):
-                st.image(imagen, caption=f"Factura {fila_df['numero']}", use_container_width=True)
+            imagen_b64 = fila_df.get("imagen_base64", "") or ""
+            if imagen_b64:
+                st.image(
+                    BytesIO(base64.b64decode(imagen_b64)),
+                    caption=f"Factura {fila_df['numero']}",
+                    use_container_width=True,
+                )
             else:
                 st.info("📷 No hay imagen disponible para esta factura.")
 

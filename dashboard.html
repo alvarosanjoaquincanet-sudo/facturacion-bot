@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🧾 Sistema de Facturación</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:        #0e1117;
+    --surface:   #1a1d27;
+    --surface2:  #262730;
+    --border:    #2d3142;
+    --accent:    #ff4b4b;
+    --accent2:   #4f8ef7;
+    --text:      #fafafa;
+    --muted:     #8b95a8;
+    --green:     #21c55d;
+    --radius:    10px;
+    --sidebar-w: 260px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    min-height: 100vh;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    width: var(--sidebar-w);
+    min-height: 100vh;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 28px 20px;
+    position: fixed;
+    top: 0; left: 0;
+    overflow-y: auto;
+  }
+  #sidebar h2 {
+    font-size: 1rem;
+    color: var(--text);
+    margin-bottom: 20px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .filter-group { margin-bottom: 24px; }
+  .filter-group label {
+    display: block;
+    font-size: .8rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 8px;
+  }
+  .checkbox-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 0; cursor: pointer; font-size: .92rem;
+  }
+  .checkbox-item input[type=checkbox] {
+    width: 16px; height: 16px; cursor: pointer;
+    accent-color: var(--accent);
+  }
+  .date-input {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 8px 10px;
+    font-size: .9rem;
+    margin-bottom: 8px;
+    color-scheme: dark;
+  }
+  .sidebar-stat {
+    margin-top: 28px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-size: .85rem;
+    color: var(--muted);
+  }
+  .sidebar-stat span { color: var(--accent2); font-weight: 600; }
+
+  /* ── Main ── */
+  #main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    padding: 32px 36px;
+    max-width: 1200px;
+  }
+  header { margin-bottom: 28px; }
+  header h1 { font-size: 1.9rem; font-weight: 700; }
+  header p  { color: var(--muted); font-size: .92rem; margin-top: 4px; }
+  .divider {
+    border: none; border-top: 1px solid var(--border);
+    margin: 28px 0;
+  }
+
+  /* ── Métricas ── */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    position: relative;
+    overflow: hidden;
+  }
+  .metric-card::before {
+    content: "";
+    position: absolute; top: 0; left: 0;
+    width: 4px; height: 100%;
+    background: var(--accent);
+    border-radius: var(--radius) 0 0 var(--radius);
+  }
+  .metric-card:nth-child(2)::before { background: var(--accent2); }
+  .metric-card:nth-child(3)::before { background: var(--green); }
+  .metric-label {
+    font-size: .82rem; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em;
+    margin-bottom: 8px;
+  }
+  .metric-value {
+    font-size: 2rem; font-weight: 700; color: var(--text);
+    line-height: 1;
+  }
+
+  /* ── Charts ── */
+  .charts-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .chart-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+  .chart-card h3 {
+    font-size: .95rem; margin-bottom: 20px;
+    color: var(--text);
+  }
+  .chart-wrapper { position: relative; height: 270px; }
+
+  /* ── Tabla ── */
+  .table-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+  .table-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .table-card h3 { font-size: .95rem; }
+  .search-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 7px 12px;
+    font-size: .88rem;
+    width: 220px;
+  }
+  .search-box::placeholder { color: var(--muted); }
+  .search-box:focus { outline: 1px solid var(--accent2); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .9rem;
+  }
+  thead th {
+    text-align: left;
+    padding: 10px 14px;
+    font-size: .78rem;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  thead th:hover { color: var(--text); }
+  thead th .sort-icon { margin-left: 4px; opacity: .5; }
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background .15s;
+  }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--surface2); }
+  tbody td { padding: 11px 14px; vertical-align: middle; }
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: .78rem;
+    font-weight: 600;
+  }
+  .badge-super   { background: #1a3a2a; color: #4ade80; }
+  .badge-rest    { background: #3a1a1a; color: #f87171; }
+  .badge-serv    { background: #1a2a3a; color: #60a5fa; }
+  .badge-otros   { background: #2a2a1a; color: #facc15; }
+  .numero-cell { font-family: monospace; color: var(--accent2); font-size: .88rem; }
+  .total-cell { font-weight: 600; color: var(--green); }
+  .pagination {
+    display: flex; justify-content: flex-end; align-items: center;
+    gap: 12px; margin-top: 16px; font-size: .85rem; color: var(--muted);
+  }
+  .page-btn {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text); padding: 5px 12px;
+    cursor: pointer; font-size: .85rem;
+  }
+  .page-btn:hover { border-color: var(--accent2); }
+  .page-btn:disabled { opacity: .4; cursor: default; }
+
+  /* ── Footer ── */
+  footer {
+    margin-top: 32px; color: var(--muted);
+    font-size: .8rem; text-align: right;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    #sidebar { display: none; }
+    #main { margin-left: 0; padding: 20px; }
+    .charts-row { grid-template-columns: 1fr; }
+    .metrics { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════  SIDEBAR  ═══════════════════ -->
+<aside id="sidebar">
+  <h2>🔍 Filtros</h2>
+
+  <div class="filter-group">
+    <label>Categoría</label>
+    <div class="checkbox-item"><input type="checkbox" class="cat-filter" value="Supermercado" checked> 🛒 Supermercado</div>
+    <div class="checkbox-item"><input type="checkbox" class="cat-filter" value="Restaurante"  checked> 🍽️ Restaurante</div>
+    <div class="checkbox-item"><input type="checkbox" class="cat-filter" value="Servicios"    checked> ⚡ Servicios</div>
+    <div class="checkbox-item"><input type="checkbox" class="cat-filter" value="Otros"        checked> 📦 Otros</div>
+  </div>
+
+  <div class="filter-group">
+    <label>Rango de fechas</label>
+    <input type="date" id="fecha-desde" class="date-input" value="2024-01-01">
+    <input type="date" id="fecha-hasta" class="date-input" value="2024-06-30">
+  </div>
+
+  <div class="sidebar-stat">
+    Mostrando <span id="count-filtered">0</span> de <span id="count-total">0</span> facturas
+  </div>
+</aside>
+
+<!-- ═══════════════════  MAIN  ═══════════════════ -->
+<main id="main">
+
+  <header>
+    <h1>🧾 Sistema de Facturación</h1>
+    <p>Panel de control · visualiza y analiza tus facturas</p>
+  </header>
+
+  <hr class="divider">
+
+  <!-- Métricas -->
+  <section class="metrics" id="metrics">
+    <div class="metric-card">
+      <div class="metric-label">📋 Total de facturas</div>
+      <div class="metric-value" id="m-total">—</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">💰 Total gastado</div>
+      <div class="metric-value" id="m-gastado">—</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">📊 Promedio / factura</div>
+      <div class="metric-value" id="m-promedio">—</div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- Gráficos -->
+  <div class="charts-row">
+    <div class="chart-card">
+      <h3>📅 Evolución mensual</h3>
+      <div class="chart-wrapper"><canvas id="chartMensual"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>🏷️ Gastos por categoría</h3>
+      <div class="chart-wrapper"><canvas id="chartCategorias"></canvas></div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <!-- Tabla -->
+  <div class="table-card">
+    <div class="table-header-row">
+      <h3>📋 Listado de facturas</h3>
+      <input type="text" class="search-box" id="search-box" placeholder="🔎  Buscar proveedor…">
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th onclick="sortTable('numero')">Número <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('proveedor')">Proveedor <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('fecha')">Fecha <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('total')">Total <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('categoria')">Categoría <span class="sort-icon">↕</span></th>
+        </tr>
+      </thead>
+      <tbody id="tabla-body"></tbody>
+    </table>
+    <div class="pagination">
+      <span id="pag-info"></span>
+      <button class="page-btn" id="btn-prev" onclick="changePage(-1)">← Anterior</button>
+      <button class="page-btn" id="btn-next" onclick="changePage(1)">Siguiente →</button>
+    </div>
+  </div>
+
+  <footer id="footer"></footer>
+</main>
+
+<!-- ═══════════════════  DATOS Y LÓGICA  ═══════════════════ -->
+<script>
+// ── Datos de muestra ──────────────────────────────────────────────
+const FACTURAS = [
+  { numero:"F-0001", proveedor:"MERCADONA",             fecha:"2024-01-08", total:87.50,  categoria:"Supermercado" },
+  { numero:"F-0002", proveedor:"Restaurante La Plaza",  fecha:"2024-01-14", total:42.80,  categoria:"Restaurante"  },
+  { numero:"F-0003", proveedor:"Endesa",                fecha:"2024-01-31", total:134.20, categoria:"Servicios"    },
+  { numero:"F-0004", proveedor:"CARREFOUR",             fecha:"2024-02-05", total:65.30,  categoria:"Supermercado" },
+  { numero:"F-0005", proveedor:"Vodafone",              fecha:"2024-02-10", total:45.00,  categoria:"Servicios"    },
+  { numero:"F-0006", proveedor:"El Asador del Norte",   fecha:"2024-02-16", total:78.40,  categoria:"Restaurante"  },
+  { numero:"F-0007", proveedor:"LIDL",                  fecha:"2024-02-21", total:52.90,  categoria:"Supermercado" },
+  { numero:"F-0008", proveedor:"Agua Canal de Isabel II",fecha:"2024-02-28",total:38.60,  categoria:"Servicios"    },
+  { numero:"F-0009", proveedor:"DIA Supermercados",     fecha:"2024-03-04", total:41.15,  categoria:"Supermercado" },
+  { numero:"F-0010", proveedor:"Farmacia Central",      fecha:"2024-03-09", total:27.80,  categoria:"Otros"        },
+  { numero:"F-0011", proveedor:"Pizzería Roma",         fecha:"2024-03-15", total:31.50,  categoria:"Restaurante"  },
+  { numero:"F-0012", proveedor:"Iberdrola",             fecha:"2024-03-31", total:118.75, categoria:"Servicios"    },
+  { numero:"F-0013", proveedor:"MERCADONA",             fecha:"2024-04-02", total:94.20,  categoria:"Supermercado" },
+  { numero:"F-0014", proveedor:"Cafetería Ático",       fecha:"2024-04-11", total:18.60,  categoria:"Restaurante"  },
+  { numero:"F-0015", proveedor:"Amazon Prime",          fecha:"2024-04-15", total:49.90,  categoria:"Servicios"    },
+  { numero:"F-0016", proveedor:"Papelería Iris",        fecha:"2024-04-19", total:22.40,  categoria:"Otros"        },
+  { numero:"F-0017", proveedor:"EL CORTE INGLÉS",       fecha:"2024-04-25", total:156.00, categoria:"Otros"        },
+  { numero:"F-0018", proveedor:"ALCAMPO",               fecha:"2024-05-03", total:73.85,  categoria:"Supermercado" },
+  { numero:"F-0019", proveedor:"Restaurante Tapeo",     fecha:"2024-05-09", total:55.20,  categoria:"Restaurante"  },
+  { numero:"F-0020", proveedor:"Orange",                fecha:"2024-05-14", total:34.99,  categoria:"Servicios"    },
+  { numero:"F-0021", proveedor:"MERCADONA",             fecha:"2024-05-20", total:101.40, categoria:"Supermercado" },
+  { numero:"F-0022", proveedor:"Clínica Dental Sonrisa",fecha:"2024-05-24", total:85.00,  categoria:"Otros"        },
+  { numero:"F-0023", proveedor:"Bar Deportivo",         fecha:"2024-06-01", total:24.50,  categoria:"Restaurante"  },
+  { numero:"F-0024", proveedor:"Endesa",                fecha:"2024-06-30", total:142.30, categoria:"Servicios"    },
+];
+
+// ── Estado global ─────────────────────────────────────────────────
+let filtradas   = [...FACTURAS];
+let sortKey     = "fecha";
+let sortAsc     = false;
+let currentPage = 1;
+const PER_PAGE  = 8;
+let chartMes, chartCat;
+
+// ── Colores ───────────────────────────────────────────────────────
+const CAT_COLORS = {
+  Supermercado: { bg:"rgba(74,222,128,.25)", border:"#4ade80" },
+  Restaurante:  { bg:"rgba(248,113,113,.25)", border:"#f87171" },
+  Servicios:    { bg:"rgba(96,165,250,.25)",  border:"#60a5fa" },
+  Otros:        { bg:"rgba(250,204,21,.25)",  border:"#facc15" },
+};
+const CAT_BADGE = {
+  Supermercado: "badge-super",
+  Restaurante:  "badge-rest",
+  Servicios:    "badge-serv",
+  Otros:        "badge-otros",
+};
+
+// ── Filtrado ──────────────────────────────────────────────────────
+function getFilters() {
+  const cats   = [...document.querySelectorAll(".cat-filter:checked")].map(c => c.value);
+  const desde  = document.getElementById("fecha-desde").value;
+  const hasta  = document.getElementById("fecha-hasta").value;
+  const buscar = document.getElementById("search-box").value.toLowerCase();
+  return { cats, desde, hasta, buscar };
+}
+
+function applyFilters() {
+  const { cats, desde, hasta, buscar } = getFilters();
+  filtradas = FACTURAS.filter(f =>
+    cats.includes(f.categoria) &&
+    f.fecha >= desde &&
+    f.fecha <= hasta &&
+    f.proveedor.toLowerCase().includes(buscar)
+  );
+  currentPage = 1;
+  render();
+}
+
+// ── Ordenación ────────────────────────────────────────────────────
+function sortTable(key) {
+  if (sortKey === key) sortAsc = !sortAsc;
+  else { sortKey = key; sortAsc = true; }
+  filtradas.sort((a, b) => {
+    let va = a[key], vb = b[key];
+    if (key === "total") return sortAsc ? va - vb : vb - va;
+    return sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+  });
+  render();
+}
+
+// ── Paginación ────────────────────────────────────────────────────
+function changePage(delta) {
+  const total = Math.ceil(filtradas.length / PER_PAGE);
+  currentPage = Math.max(1, Math.min(total, currentPage + delta));
+  renderTabla();
+}
+
+// ── Render tabla ──────────────────────────────────────────────────
+function renderTabla() {
+  const start = (currentPage - 1) * PER_PAGE;
+  const page  = filtradas.slice(start, start + PER_PAGE);
+  const total = Math.ceil(filtradas.length / PER_PAGE);
+  const tbody = document.getElementById("tabla-body");
+
+  tbody.innerHTML = page.map(f => `
+    <tr>
+      <td class="numero-cell">${f.numero}</td>
+      <td>${f.proveedor}</td>
+      <td>${formatFecha(f.fecha)}</td>
+      <td class="total-cell">$${f.total.toFixed(2)}</td>
+      <td><span class="badge ${CAT_BADGE[f.categoria]}">${f.categoria}</span></td>
+    </tr>`).join("");
+
+  document.getElementById("pag-info").textContent =
+    `Página ${currentPage} de ${Math.max(total,1)}`;
+  document.getElementById("btn-prev").disabled = currentPage <= 1;
+  document.getElementById("btn-next").disabled = currentPage >= total;
+}
+
+function formatFecha(iso) {
+  const [y,m,d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+// ── Métricas ──────────────────────────────────────────────────────
+function renderMetricas() {
+  const total    = filtradas.length;
+  const gastado  = filtradas.reduce((s,f) => s + f.total, 0);
+  const promedio = total ? gastado / total : 0;
+
+  animateValue("m-total",   0, total,   800, v => v.toString());
+  animateValue("m-gastado", 0, gastado, 900, v => `$${v.toFixed(2)}`);
+  animateValue("m-promedio",0, promedio,1000,v => `$${v.toFixed(2)}`);
+
+  document.getElementById("count-filtered").textContent = total;
+  document.getElementById("count-total").textContent    = FACTURAS.length;
+}
+
+function animateValue(id, from, to, duration, fmt) {
+  const el    = document.getElementById(id);
+  const start = performance.now();
+  function step(now) {
+    const t = Math.min((now - start) / duration, 1);
+    el.textContent = fmt(from + (to - from) * easeOut(t));
+    if (t < 1) requestAnimationFrame(step);
+    else el.textContent = fmt(to);
+  }
+  requestAnimationFrame(step);
+}
+function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+
+// ── Gráficos ──────────────────────────────────────────────────────
+function agruparPorMes() {
+  const meses = {};
+  filtradas.forEach(f => {
+    const m = f.fecha.substring(0, 7);
+    if (!meses[m]) meses[m] = { cantidad: 0, total: 0 };
+    meses[m].cantidad++;
+    meses[m].total += f.total;
+  });
+  const keys = Object.keys(meses).sort();
+  return {
+    labels:    keys.map(k => { const [y,m]=k.split("-"); return `${m}/${y}`; }),
+    cantidades: keys.map(k => meses[k].cantidad),
+    totales:   keys.map(k => meses[k].total),
+  };
+}
+
+function agruparPorCategoria() {
+  const cats = {};
+  filtradas.forEach(f => {
+    cats[f.categoria] = (cats[f.categoria] || 0) + f.total;
+  });
+  const keys = Object.keys(cats);
+  return {
+    labels: keys,
+    values: keys.map(k => cats[k]),
+    bgs:    keys.map(k => (CAT_COLORS[k]||{bg:"#555"}).bg),
+    borders:keys.map(k => (CAT_COLORS[k]||{border:"#888"}).border),
+  };
+}
+
+function renderCharts() {
+  const mes = agruparPorMes();
+  const cat = agruparPorCategoria();
+  const gridColor = "rgba(255,255,255,.07)";
+  const tickColor = "#8b95a8";
+
+  // Destruir si ya existen
+  if (chartMes) chartMes.destroy();
+  if (chartCat) chartCat.destroy();
+
+  // Barras mensuales
+  chartMes = new Chart(document.getElementById("chartMensual"), {
+    type: "bar",
+    data: {
+      labels: mes.labels,
+      datasets: [{
+        label: "Facturas",
+        data: mes.cantidades,
+        backgroundColor: mes.totales.map(t => `rgba(79,142,247,${Math.min(.3+t/600,.9)})`),
+        borderColor: "#4f8ef7",
+        borderWidth: 1.5,
+        borderRadius: 5,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            afterLabel: (ctx) => {
+              const m = Object.keys(agruparPorMes().labels)[ctx.dataIndex];
+              return `Total: $${mes.totales[ctx.dataIndex].toFixed(2)}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { grid:{ color:gridColor }, ticks:{ color:tickColor } },
+        y: { grid:{ color:gridColor }, ticks:{ color:tickColor, stepSize:1 }, beginAtZero:true },
+      }
+    }
+  });
+
+  // Dona categorías
+  chartCat = new Chart(document.getElementById("chartCategorias"), {
+    type: "doughnut",
+    data: {
+      labels: cat.labels,
+      datasets: [{
+        data: cat.values,
+        backgroundColor: cat.bgs,
+        borderColor: cat.borders,
+        borderWidth: 2,
+        hoverOffset: 8,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      cutout: "55%",
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: { color: tickColor, padding: 14, font:{ size:12 } }
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` $${ctx.parsed.toFixed(2)} (${Math.round(ctx.parsed/cat.values.reduce((a,b)=>a+b,0)*100)}%)`
+          }
+        }
+      }
+    }
+  });
+}
+
+// ── Render general ────────────────────────────────────────────────
+function render() {
+  renderMetricas();
+  renderTabla();
+  renderCharts();
+}
+
+// ── Eventos ───────────────────────────────────────────────────────
+document.querySelectorAll(".cat-filter, #fecha-desde, #fecha-hasta")
+        .forEach(el => el.addEventListener("change", applyFilters));
+document.getElementById("search-box")
+        .addEventListener("input", applyFilters);
+
+// ── Inicializar ───────────────────────────────────────────────────
+document.getElementById("footer").textContent =
+  `Actualizado: ${new Date().toLocaleString("es-ES")}`;
+
+// Orden inicial: más reciente primero
+FACTURAS.sort((a,b) => b.fecha.localeCompare(a.fecha));
+applyFilters();
+</script>
+</body>
+</html>

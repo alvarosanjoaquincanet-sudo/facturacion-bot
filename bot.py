@@ -13,9 +13,9 @@ Ejecución:
   python bot.py
 """
 
+import base64
 import logging
 import os
-import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -371,21 +371,22 @@ async def _guardar_y_confirmar(
 
         numero = obtener_siguiente_numero()
 
-        # Mover imagen temporal al nombre definitivo
-        imagen_final = ""
+        imagen_b64 = ""
         if imagen_tmp and os.path.exists(imagen_tmp):
-            ext          = Path(imagen_tmp).suffix or ".jpg"
-            imagen_final = str(IMAGENES_DIR / f"{numero}{ext}")
-            shutil.move(imagen_tmp, imagen_final)
-            logger.info("Imagen guardada: %s", imagen_final)
+            with open(imagen_tmp, "rb") as f:
+                imagen_b64 = base64.b64encode(f.read()).decode("utf-8")
+            try:
+                os.remove(imagen_tmp)
+            except OSError:
+                pass
 
         guardar_factura(
-            numero      = numero,
-            proveedor   = proveedor,
-            fecha       = fecha,
-            total       = total,
-            categoria   = categoria,
-            imagen_path = imagen_final,
+            numero        = numero,
+            proveedor     = proveedor,
+            fecha         = fecha,
+            total         = total,
+            categoria     = categoria,
+            imagen_base64 = imagen_b64,
         )
 
         await update.effective_message.reply_text(
