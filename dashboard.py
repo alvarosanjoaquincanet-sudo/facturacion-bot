@@ -7,8 +7,8 @@ import logging
 from datetime import datetime
 from io import BytesIO
 
+import altair as alt
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -78,20 +78,18 @@ def _grafico_mensual(df: pd.DataFrame) -> None:
           .sort_values("Mes")
     )
 
-    fig = px.bar(
-        resumen, x="Mes", y="Cantidad", color="Total",
-        color_continuous_scale="Blues", text="Cantidad",
-        title="Facturas por mes",
-        labels={"Cantidad": "N.º de facturas", "Total": "Total ($)"},
+    chart = (
+        alt.Chart(resumen)
+        .mark_bar()
+        .encode(
+            x=alt.X("Mes:N", sort=None, title="Mes"),
+            y=alt.Y("Cantidad:Q", title="N.º de facturas"),
+            color=alt.Color("Total:Q", scale=alt.Scale(scheme="blues"), legend=None),
+            tooltip=["Mes", "Cantidad", alt.Tooltip("Total:Q", format="$.2f", title="Total")],
+        )
+        .properties(title="Facturas por mes")
     )
-    fig.update_traces(textposition="outside")
-    fig.update_layout(
-        coloraxis_showscale=False,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(t=40, b=0),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _grafico_categorias(df: pd.DataFrame) -> None:
@@ -103,21 +101,19 @@ def _grafico_categorias(df: pd.DataFrame) -> None:
         df.groupby("categoria")["total"]
           .sum().reset_index()
           .rename(columns={"categoria": "Categoría", "total": "Total"})
-          .sort_values("Total", ascending=False)
     )
 
-    fig = px.pie(
-        por_cat, names="Categoría", values="Total",
-        title="Gastos por categoría", hole=0.42,
-        color_discrete_sequence=px.colors.qualitative.Set2,
+    chart = (
+        alt.Chart(por_cat)
+        .mark_arc(innerRadius=50)
+        .encode(
+            theta=alt.Theta("Total:Q"),
+            color=alt.Color("Categoría:N", legend=alt.Legend(title="Categoría")),
+            tooltip=["Categoría", alt.Tooltip("Total:Q", format="$.2f", title="Total")],
+        )
+        .properties(title="Gastos por categoría")
     )
-    fig.update_traces(textposition="inside", textinfo="percent+label")
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(t=40, b=0),
-        showlegend=False,
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _grafico_por_usuario(df: pd.DataFrame) -> None:
@@ -138,20 +134,18 @@ def _grafico_por_usuario(df: pd.DataFrame) -> None:
         st.info("Sin datos de usuarios todavía.")
         return
 
-    fig = px.bar(
-        por_usuario, x="Usuario", y="Total",
-        color="Facturas", color_continuous_scale="Teal",
-        text="Total", title="Gasto total por usuario",
-        labels={"Total": "Total ($)", "Facturas": "N.º facturas"},
+    chart = (
+        alt.Chart(por_usuario)
+        .mark_bar()
+        .encode(
+            x=alt.X("Usuario:N", sort="-y"),
+            y=alt.Y("Total:Q", title="Total ($)"),
+            color=alt.Color("Facturas:Q", scale=alt.Scale(scheme="tealblues"), legend=None),
+            tooltip=["Usuario", alt.Tooltip("Total:Q", format="$.2f", title="Total"), "Facturas"],
+        )
+        .properties(title="Gasto total por usuario")
     )
-    fig.update_traces(texttemplate="$%{text:,.2f}", textposition="outside")
-    fig.update_layout(
-        coloraxis_showscale=False,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(t=40, b=0),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _tabla_usuarios(df_usuarios: pd.DataFrame) -> None:

@@ -2,6 +2,5 @@ python-telegram-bot==20.7
 pytesseract>=0.3.10
 streamlit>=1.29.0
 pandas>=2.2.0
-plotly>=5.18.0
 Pillow>=10.1.0
 psycopg2-binary>=2.9.9
